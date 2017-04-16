@@ -1,0 +1,495 @@
+---
+title: "Document Classification"
+author: "Pavan Akula"
+date: "April 10, 2017"
+output: html_document
+---
+
+##Abstract
+The goal of this project is to classify documents (unstructured data) using various supervised and unsupervised machine learning techniques. The documents used in this project are harvested from [*The American Presidency Project (APP)*](http://www.presidency.ucsb.edu), non-profit and non-partisan website, hosted at the University of California, Santa Barbara. To demonstrate _natural language processing and machine learning_ following techniques are used.
+
+Supervised learning techniques
+
+  - KNN, K-Nearest Neighbour model
+  - SVM, Support Vector Machines model
+  - Random Forest Classifier
+  - Maximum Entropy Classifier
+
+Unsupervised learning techniques
+
+  - LDA, Latent Dirichlet Allocation
+  - CTM, Correlated Topic Model
+
+Libraries used.
+
+```{r, echo=T, warning=F, message=F}
+if (!require('rvest')) install.packages('rvest')                #Web scraping and text extraction
+if (!require('plyr')) install.packages('plyr')                  #Data frame and table functions
+if (!require('dplyr')) install.packages('dplyr')                #Data frame and table functions
+if (!require('stringr')) install.packages('stringr')            #String manuplilation functions
+if (!require('tm')) install.packages('tm')                      #Text cleaning and organization - Document-Term-Matrix
+if (!require('class')) install.packages('class')                #KNN supervised learning
+if (!require('RTextTools')) install.packages('RTextTools')      #For supervised learning SVM, MAXEXT
+if (!require('randomForest')) install.packages('randomForest')  #Random Forest supervised learning
+if (!require('caret')) install.packages('caret')                #For confusion matrix
+if (!require('topicmodels')) install.packages('topicmodels')    #For unsupervised learning techniques LDA and CTM
+if (!require('Rmpfr')) install.packages('Rmpfr')                #For calculating harmonic means
+if (!require('ggplot2')) install.packages('ggplot2')            #Graphs package
+if (!require('knitr')) install.packages('knitr')
+#knitr::opts_chunk$set(error = TRUE)
+```
+
+##Data Source
+
+Data used throughout the project is harvested from [*The American Presidency Project (APP)*](http://www.presidency.ucsb.edu/2016_election.php). We will be using campaign speeches and remarks made by President Donald Trump and Former Secretary of State Hillary Clinton during 2016 presidential campaign. More information about data can be found at http://www.presidency.ucsb.edu/2016_election.php. Following code connects to website and extracts data. Each speech is stored as a file.
+
+```{r echo=TRUE}
+#Get links to all speeches
+speeches <- function(urlHtml){
+  #Ectract all tables
+  speeches.getnodes <-  urlHtml %>% html_nodes(xpath = "//tr/td//table")
+  
+  #There are many tables on the page, table with attribute width="700" contains links to all speeches
+  speeches.table.attrs <-  html_attr(speeches.getnodes,"width")
+  #Get particular table with width="700"
+  speeches.allUrls.table <- speeches.getnodes[match("700",speeches.table.attrs)]
+  
+  #Convert data into dataframe from HTML table
+  speeches.df <- html_table(speeches.allUrls.table, fill=TRUE, header = TRUE)[[1]]
+  speeches.df$fn <- gsub(pattern = "\\s+", replacement = "\\-", paste(speeches.df$Actor,speeches.df$Date,sep = "-"))
+  speeches.df$fn <- gsub(pattern = "\\.", replacement = "", speeches.df$fn)
+  speeches.df$fn <- gsub(pattern = "\\,", replacement = "", speeches.df$fn)
+  
+  #Get Links
+  speechurl = speeches.allUrls.table %>%  html_nodes(xpath = "//a") %>% html_attr("href")
+  speechurl <- gsub(pattern = "\\.\\.", replacement = "http://www.presidency.ucsb.edu", speechurl)
+  speeches.df$speechurl <- cbind(unlist(speechurl[str_detect(speechurl, "pid")]))
+  return(speeches.df)
+}
+
+#TryCatch block for handeling page encoding errors
+read.speech.html <- function(weburl, encoding){
+  speech.out <- tryCatch(read_html(weburl, encoding = encoding), error = function(e){"Error"})
+  return(speech.out)
+}
+
+#Get text from each link and save as text file
+speechdata <- function(df, folder){
+  
+  #Meta file with file names
+  meta.speeches.file <- paste0(folder,"meta-speeches-file.csv")
+  meta.speech.text <- paste("Candidate", "Date", "Title", "SpeechUrl", "FileName", sep = '","')
+  meta.speech.text <- paste0('"', meta.speech.text, '"')
+  write(meta.speech.text, file = meta.speeches.file, append = FALSE)
+
+  #Loop through each link
+  for(i in 1:nrow(df)){
+    speechurl <- df[i,]$speechurl
+    
+    #Get data from webpage
+    speech.html <- read.speech.html(speechurl, encoding = "")
+    
+    if (length(speech.html) < 2){
+      speech.html <- read.speech.html(speechurl, encoding = "UTF-8")
+    }
+    
+    if (length(speech.html) > 1){
+      #Get nodes with have "span" tag
+      speech.nodes <- html_nodes(speech.html, "span")
+      
+      #Get attributes of each node
+      speech.attrs <- unlist(html_attrs(speech.nodes))
+      
+      #Get text for each node
+      speech.nodes.text <- html_text(speech.nodes)
+      
+      #Node that has attribute class="displaytext" has actual text
+      speech.text <- speech.nodes.text[match("displaytext", speech.attrs)]
+  
+      #Convert Unicode "UTF-8" to "ASCII"
+      speech.text = iconv(speech.text, "UTF8", "ASCII", sub=" ")
+      
+      #Save text to folder
+      speechFileName <- paste0(df[i,]$fn, "-", i, ".txt")
+      fileFullPath <- paste0(folder, speechFileName)
+      
+      write(speech.text, file = fileFullPath, append = FALSE)
+      
+      meta.speech.text <- paste(df[i,]$Actor, df[i,]$Date, df[i,]$Title, df[i,]$speechurl, speechFileName, sep = '","')
+      meta.speech.text <- paste0('"', meta.speech.text, '"')
+      write(meta.speech.text, file = meta.speeches.file, append = TRUE)
+    }
+
+    Sys.sleep(2)
+  }
+}
+
+#Create folder
+folderDetails <- function(rootDir, subDir){
+  dir.create(file.path(rootDir, subDir), showWarnings = FALSE)
+  return(paste0(rootDir, subDir, "/"))
+}
+
+#Connect to website and download data
+webDataDownload <- function(wUrl, saveDataFolder){
+  webPageHtml <- read_html(wUrl)
+  speeches.table <- speeches(webPageHtml)
+  speechdata(speeches.table, saveDataFolder)
+}
+
+#Create folder to download files
+wd <- getwd()
+rootDir <- "D:/CUNY/607/Week10/Project04/" #Change path
+candidateDirs <- c("DonaldTrump", "HillaryClinton", "DT_Nov", "HC_Nov")
+fileDirs <- lapply(candidateDirs, folderDetails, rootDir = rootDir)
+fileDirs <- as.character(unlist(fileDirs))
+
+candidateUrls <- c("http://www.presidency.ucsb.edu/2016_election_speeches.php?candidate=45&campaign=2016TRUMP&doctype=5000", "http://www.presidency.ucsb.edu/2016_election_speeches.php?candidate=70&campaign=2016CLINTON&doctype=5000")
+
+#Download data
+for(i in 1:length(candidateUrls)){
+  #Download data
+  webDataDownload(candidateUrls[i], fileDirs[i])
+
+  #Create Sample data, this data will be used for unsupervised learning techniques
+   sample.files <- list.files(path = fileDirs[i], pattern = glob2rx("*November*2016*"), all.files = FALSE, full.names = TRUE, recursive = FALSE)
+  file.copy(sample.files, fileDirs[i+2])
+}
+```
+
+###Corpus and Document Term Matrix(DTM) generation
+
+Once data extraction is complete, speeches document corpus is generated using `Corpus` function from `tm` package. Corpus is further cleaned for words `[applpause]`,`break`,`next` and `thank` and English language stop words (the, and, etc.). These words do not add value to the content of the speech. Using `stemDocument` function words such as `dependencies` and `dependent` is converted into stem word `depend`. `tm` package offers functions `DocumentTermMatrix` and `TermDocumentMatrix` to generate document and term matrix. `DocumentTermMatrix` function converts the `Corpus` into `Documents` as rows and `Words` as columns. Each `Word` inside the `Document` is known as `Term`. Whereas `TermDocumentMatrix` converts `Documents` as columns and `Terms` as rows. For the purpose of the project, we will be using `DocumentTermMatrix` function.
+
+```{r, echo=T, warning=F, message=F}
+#Read files, generate clean Corpus and Term Document Matrix
+filesToDTM <- function(rootDir, subDir, pattern){
+  #rootDir = "D:/CUNY/607/Week10/Project04/"
+  #subDir = "DonaldTrump"
+  #pattern = "txt$"
+  # Get file list
+  fileFolder <-paste0(rootDir, subDir, "/")
+  fileList <- list.files(path = fileFolder, pattern = pattern, all.files = FALSE, full.names = TRUE, recursive = FALSE)
+  
+  #Generate corpus for filelist
+  speech.corpus <- Corpus(URISource(fileList), readerControl = list(reader = readPlain, language = "en_US", load = TRUE))
+  
+  #Clean up the corpus
+  speech.corpus <- tm_map(speech.corpus, removeWords, c("[applpause]","break","next", "thank"))
+  speech.corpus <- tm_map(speech.corpus, removePunctuation)
+  speech.corpus <- tm_map(speech.corpus, removeNumbers)
+  speech.corpus <- tm_map(speech.corpus, stripWhitespace)
+  speech.corpus <- tm_map(speech.corpus, content_transformer(tolower))
+  speech.corpus <- tm_map(speech.corpus, PlainTextDocument)
+  speech.corpus <- tm_map(speech.corpus, stemDocument)
+  speech.corpus <- tm_map(speech.corpus, removeWords, stopwords("english"))
+  
+  #Generate Document Term Matrix
+  speech.dtm <- DocumentTermMatrix(speech.corpus)
+  speech.dtm <- removeSparseTerms(speech.dtm, 0.7)
+  dtmOutput <- list(candidateSpeech = subDir, dtm = speech.dtm, speechFile = fileList)
+  return(dtmOutput)
+}
+
+#Attach candidate names to DTM
+attachCandidateToDTM <- function(speechDTM){
+  speech.matrix <- data.matrix(speechDTM[["dtm"]])
+  #Convert matrix to dataframe
+  speech.df <- as.data.frame(speech.matrix, stringsAsFactors = F)
+  
+  #Apply candidate name to each row inside the frame
+  speech.df <- cbind(speech.df, rep(speechDTM[["candidateSpeech"]], nrow(speech.df)))
+  
+  #Rename column
+  colnames(speech.df)[ncol(speech.df)] <- "candidateSpeech"
+  
+  #Apply speech file name to each row inside the frame
+  speech.df <- cbind(speech.df, speechDTM[["speechFile"]])
+  
+  #Rename column
+  colnames(speech.df)[ncol(speech.df)] <- "speechFile"
+  
+  return(speech.df)
+}
+
+# Files to be used
+files.pattern = "txt$"
+
+#Convert files to Document Term Matrix
+wd <- getwd()
+rootDir <- "D:/CUNY/607/Week10/Project04/" #Change path
+candidateDirs <- c("DonaldTrump", "HillaryClinton")
+speechs.dtm <- lapply(candidateDirs, filesToDTM, rootDir = rootDir, pattern = files.pattern)
+
+#Apply candidate name to speech
+candidate.data <- lapply(speechs.dtm, attachCandidateToDTM)
+
+#Get data for supervised learning
+speech.data <- do.call(rbind.fill, candidate.data)
+speech.data$candidateSpeech = ifelse(speech.data$candidateSpeech == "DonaldTrump", "Donald Trump", "Hillary Clinton")
+
+#Replace missing values with 0
+speech.data[is.na(speech.data)] <- 0
+
+#Seperate data and candidate names
+speech.data.candidates <- speech.data[,"candidateSpeech"]
+speech.data.fileNames <- speech.data[,"speechFile"]
+
+#Remove candidate and speech file info from Data frame speech.data.nocandidate, this data will be used for all supervised learning techniques
+speech.data.nocandidate <- speech.data
+speech.data.nocandidate$candidateSpeech <- NULL
+speech.data.nocandidate$speechFile <- NULL
+
+#Get data for unsupervised learning techniques. As unsupervised learning techniques are resourse and time consuming, data is limited to speeches given by both candidates in the month November, 2016.
+nov.candidateDirs <- c("DT_Nov", "HC_Nov")
+nov.speechs.dtm <- lapply(nov.candidateDirs, filesToDTM, rootDir = rootDir, pattern = files.pattern)
+
+#Apply candidate name to speech
+nov.candidate.data <- lapply(nov.speechs.dtm, attachCandidateToDTM)
+
+nov.speech.data <- do.call(rbind.fill, nov.candidate.data)
+nov.speech.data$candidateSpeech = ifelse(nov.speech.data$candidateSpeech == "DT_Nov", "Donald Trump", "Hillary Clinton")
+
+#Replace missing values with 0
+nov.speech.data[is.na(nov.speech.data)] <- 0
+
+#Seperate data and candidate names
+nov.speech.data.candidates <- nov.speech.data[,"candidateSpeech"]
+nov.speech.data.fileNames <- nov.speech.data[,"speechFile"]
+
+#Remove candidate and speech file info from Data frame nov.speech.data.nocandidate, this data will be used for all unsupervised learning techniques
+nov.speech.data.nocandidate <- nov.speech.data
+nov.speech.data.nocandidate$candidateSpeech <- NULL
+nov.speech.data.nocandidate$speechFile <- NULL
+
+```
+
+###Generate Train and Test datasets
+
+```{r, echo=T}
+#Create datasets, 70% - Training dataset, 30% - Testing dataset
+set.seed(1974)
+speech.train.test <- sample(2, nrow(speech.data.nocandidate), replace = TRUE, prob = c(0.7, 0.3))
+
+train.data <- speech.data.nocandidate[speech.train.test == 1,]
+test.data <- speech.data.nocandidate[speech.train.test == 2,]
+```
+
+##Supervised learning techniques 
+
+###k-Nearest Neighbour(kNN) model
+
+In k-NN classification, the output is a class membership. An object is classified by a majority vote of its neighbors, with the object being assigned to the class most common among its k nearest neighbors (k is a positive integer, typically small). `knn` function is part of `class` package. `confusionMatrix` function is part of `caret` package.
+
+The output of the kNN classification model suggests three documents are misclassified. Documents are classified as `Hillary Clinton` when the actual speech was delivered by President `Donald Trump`. The accuracy of the model is 96.05%. `class` package is used to demonstrate kNN model.
+
+```{r, echo=T}
+#knn function takes parameters training dataset, test dataset and categorical attributes of training dataset, k-number of neighbors considered. Number of neighbors in our case is 10.
+#In our case categorical attributes are candidate names.
+train.candidates <- factor(speech.data.candidates[speech.train.test == 1])
+knn.prediction <- class::knn(train = train.data, test = test.data, cl = train.candidates, k=10)
+
+cm <- confusionMatrix(knn.prediction, speech.data.candidates[speech.train.test == 2])
+#Save confusion Matrix output to data frame
+cm.data <- as.data.frame(t(cm$byClass))
+cm.data$Model <- "KNN"
+cm
+
+fourfoldplot(cm$table, color = c("#CC6666", "#99CC99"),conf.level = 0, margin = 1, main = "kNN Confusion Matrix")
+```
+
+###Support Vector Machines(SVM) model
+
+The output of the SVM classification model suggests two documents are misclassified. Documents are classified as `Hillary Clinton` when the actual speech was delivered by President `Donald Trump`. The accuracy of the model is 97.37%. `RTextTools` package is used to demonstrate SVM model.
+
+```{r, echo=T}
+train.candidates <- factor(speech.data.candidates[speech.train.test == 1])
+
+#Create container for training data
+train.container <- create_container(train.data, train.candidates, trainSize=1:nrow(train.data), virgin=FALSE)
+
+#Create model for SVM
+train.model <- train_model(train.container, "SVM", kernel="linear", cost=1)
+
+svn.prediction <- predict(train.model, test.data)
+cm<-confusionMatrix(svn.prediction, speech.data.candidates[speech.train.test == 2])
+
+tmp.cm<- as.data.frame(t(cm$byClass))
+tmp.cm$Model <- "SVM"
+cm.data<- rbind(cm.data,tmp.cm)
+cm
+fourfoldplot(cm$table, color = c("#CC6666", "#99CC99"),conf.level = 0, margin = 1, main = "SVM Confusion Matrix")
+```
+
+###Random Forest Classifier
+
+The output of the Random Forest Classifier model suggests zero documents are misclassified. The accuracy of the model is 100%. `randomForest` package is used to demonstrate Random Forest Classifier model.
+
+```{r, echo=T}
+#Get all columns in dataframe
+#str(train.c.data, list.len=ncol(train.c.data))
+
+#Adding candidate name to Training data
+train.rf.data <- cbind(train.data, speech.data.candidates[speech.train.test == 1])
+colnames(train.rf.data)[ncol(train.rf.data)] <- "candidateSpeech"
+
+rfp.fit <- randomForest(candidateSpeech ~ ., data = train.rf.data, method="class")
+rfp.prediction= predict(rfp.fit, test.data)
+
+#Generate confusion matrix
+cm<-confusionMatrix(rfp.prediction, speech.data.candidates[speech.train.test == 2])
+tmp.cm<- as.data.frame(t(cm$byClass))
+tmp.cm$Model <- "RFC"
+cm.data<- rbind(cm.data,tmp.cm)
+cm
+
+fourfoldplot(cm$table, color = c("#CC6666", "#99CC99"),conf.level = 0, margin = 1, main = "Random Forest Classifier Confusion Matrix")
+```
+
+###Maximum Entropy Classifier
+
+The output of the Maximum Entropy Classifier model suggests zero documents are misclassified. The accuracy of the model is 100%. `RTextTools` package is used to demonstrate Random Forest Classifier model.
+
+```{r, echo=T}
+train.candidates <- factor(speech.data.candidates[speech.train.test == 1])
+train.container <- create_container(train.data, train.candidates, trainSize=1:nrow(train.data), virgin=FALSE)
+
+train.model <- train_model(train.container, "MAXENT", kernel="linear", cost=1)
+mec.prediction <- predict(train.model, test.data)
+
+cm<-confusionMatrix(mec.prediction[,1], speech.data.candidates[speech.train.test == 2])
+
+tmp.cm<- as.data.frame(t(cm$byClass))
+tmp.cm$Model <- "MAXENT"
+cm.data<- rbind(cm.data,tmp.cm)
+cm
+
+fourfoldplot(cm$table, color = c("#CC6666", "#99CC99"),conf.level = 0, margin = 1, main = "Maximum Entropy Classifier Confusion Matrix")
+```
+
+##Unsupervised learning techniques
+
+To demonstrate unsupervised learning techniques, a small dataset consisting of November 2016 speeches of both candidates are used. Unsupervised learning techniques are also known as `Topic Modeling`
+
+###Latent Dirichlet Allocation(LDA)
+
+The number of models to be generated, `k` is calculated using *_David Meza's_* work. More information can be found at http://davidmeza1.github.io/2015/07/20/topic-modeling-in-R.html. Output suggests `Topic 7` is best fit for document `1`. `topicmodels` package is used to demonstrate Latent Dirichlet Allocation model.
+
+```{r, echo=T}
+#str(nov.speech.data.nocandidate, list.len=ncol(nov.speech.data.nocandidate))
+
+#Determine k number of topics - David Meza
+#http://davidmeza1.github.io/2015/07/20/topic-modeling-in-R.html
+#Instead of Document-Term-Matrix(dtm), dataframe extracted from dtm is used.
+#------#
+harmonicMean <- function(logLikelihoods, precision = 2000L) {
+  llMed <- median(logLikelihoods)
+  as.double(llMed - log(mean(exp(-mpfr(logLikelihoods,
+                                       prec = precision) + llMed))))
+}
+
+seqk <- seq(2, 20, 1)
+burnin <- 1000
+iter <- 1000
+keep <- 50
+system.time(fitted_many <- lapply(seqk, function(k) topicmodels::LDA(nov.speech.data.nocandidate, k = k,
+                                                     method = "Gibbs",control = list(burnin = burnin,
+                                                                         iter = iter, keep = keep) )))
+
+logLiks_many <- lapply(fitted_many, function(L)  L@logLiks[-c(1:(burnin/keep))])
+
+# compute harmonic means
+hm_many <- sapply(logLiks_many, function(h) harmonicMean(h))
+
+ot <- paste("The optimal number of topics is", seqk[which.max(hm_many)])
+
+ldaplot <- ggplot(data.frame(seqk, hm_many), aes(x=seqk, y=hm_many)) + geom_path(lwd=1.5) +
+  theme(text = element_text(family= NULL),
+        axis.title.y=element_text(vjust=1, size=16),
+        axis.title.x=element_text(vjust=-.5, size=16),
+        axis.text=element_text(size=16),
+        plot.title=element_text(size=20)) +
+  xlab('Number of Topics') +
+  ylab('Harmonic Mean') +
+     annotate("text", x = 25, y = -90000, label="") +
+  ggtitle(expression(atop("Latent Dirichlet Allocation Analysis", atop(italic("Candidate Speeches November, 2016"), "")))) + labs(subtitle = ot)
+
+ldaplot
+#------#
+
+#Generate topic models 
+#Monitor time taken to generate the topics
+system.time(nov.speeches.model <- topicmodels::LDA(nov.speech.data.nocandidate, k = seqk[which.max(hm_many)], method = "Gibbs", control = list(iter=1000, seed = 0622)))
+
+nov.speeches.topics <- topicmodels::topics(nov.speeches.model, 1)
+
+#Display top 15 terms.
+nov.speeches.terms <- as.data.frame(topicmodels::terms(nov.speeches.model, 15), stringsAsFactors = FALSE)
+nov.speeches.terms #[1:8]
+
+#Generates dataframe to store the candidate, speech file and the most likely topic
+nov.speeches.topics.df <- as.data.frame(nov.speeches.topics)
+
+#Bind Topic Model that best fits the speech
+nov.speeches.topics.df <- dplyr::transmute(nov.speeches.topics.df, Id = rownames(nov.speeches.topics.df), Topic = nov.speeches.topics)
+
+nov.speeches.topics.df$Id <- as.integer(nov.speeches.topics.df$Id)
+
+#To test accuracy bind candidate name and speech file values to the dataframe
+nov.speeches.topics.df$Candidate <- nov.speech.data.candidates[nov.speeches.topics.df$Id]
+nov.speeches.topics.df$SpeechFile <- nov.speech.data.fileNames[nov.speeches.topics.df$Id]
+
+#Generate output
+nov.speeches.topics.df %>% 
+  select (Id, Topic, Candidate, SpeechFile) %>% 
+  kable(digits = 2, col.names = c("DocumentId", "TopicModelId", "Candidate", "SpeechFile"), format='pandoc', caption = "Best Fit Topic Model to Document using Latent Dirichlet Allocation")
+
+```
+
+
+###Correlated Topic Model(CTM)
+
+Correlated Topic Model is generated using same `k` value from Latent Dirichlet Allocation. Output suggests `Topic 3` is best fit for document `1`. `topicmodels` package is used to demonstrate Correlated Topic Model model.
+
+```{r, echo=T, warning=F, message=F}
+system.time(nov.speeches.model.ctm <- topicmodels::CTM(nov.speech.data.nocandidate, k = seqk[which.max(hm_many)], method = "VEM", control = list(seed = 0622, var = list(tol = 10^-4), em = list(tol = 10^-3))))
+
+nov.speeches.topics.ctm <- topicmodels::topics(nov.speeches.model.ctm, 1)
+nov.speeches.terms.ctm <- as.data.frame(topicmodels::terms(nov.speeches.model.ctm, 15), stringsAsFactors = FALSE)
+nov.speeches.terms.ctm #[1:8]
+
+# Creates a dataframe to store the candidate, speech file and the most likely topic
+nov.speeches.topics.ctm.df <- as.data.frame(nov.speeches.topics.ctm)
+nov.speeches.topics.ctm.df <- dplyr::transmute(nov.speeches.topics.ctm.df, Id = rownames(nov.speeches.topics.ctm.df), Topic = nov.speeches.topics.ctm)
+
+#Bind candidate name and speechfile
+nov.speeches.topics.ctm.df$Id <- as.integer(nov.speeches.topics.ctm.df$Id)
+nov.speeches.topics.ctm.df$Candidate <- nov.speech.data.candidates[nov.speeches.topics.ctm.df$Id]
+nov.speeches.topics.ctm.df$SpeechFile <- nov.speech.data.fileNames[nov.speeches.topics.ctm.df$Id]
+
+#Generate output
+nov.speeches.topics.ctm.df %>% 
+  select (Id, Topic, Candidate, SpeechFile) %>% 
+  kable(digits = 2, col.names = c("DocumentId", "TopicModelId", "Candidate", "SpeechFile"), format='pandoc', caption = "Best Fit Topic Model to Document using Correlated Topic Model")
+```
+
+##Conclusion
+
+- Under supervised learning techniques, Random Forest Classifier and Maximum Entropy Classifier models performed better than kNN and SVM models. Following are the results
+```{r, echo=T}
+cm.data %>% kable(digits = 4, format='pandoc', caption = "Supervised Learning Techniques - Model performance")
+```
+
+- Under unsupervised learning techniques, LDA and CTM models generated topic models that are different from each other.
+
+#####References:
+
+- Automated Data Collection With R - Simon Munzert, Christian Rubba, Peter Meiﬂner, Dominic Nyhuis
+- http://davidmeza1.github.io/2015/07/20/topic-modeling-in-R.html - David Meza.
+- https://www.youtube.com/watch?v=j1V2McKbkLo - Timothy DAuria.
+- http://data.library.virginia.edu/reading-pdf-files-into-r-for-text-mining - Clay Ford, University of Virginia.
+- https://www.youtube.com/watch?v=dJclNIN-TPo - Bharatendra Rai
+- http://www.presidency.ucsb.edu/index.php - John T. Woolley, Gerhard Peters and University of California, Santa Barbara
+- http://stackoverflow.com/questions/23891140/r-how-to-visualize-confusion-matrix-using-the-caret-package
+- http://vikasgupta1812.github.io/topic-modelling/index.html
+
